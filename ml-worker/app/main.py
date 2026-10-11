@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from io import BytesIO
 import os
 import time
@@ -5,11 +6,30 @@ import time
 from fastapi import FastAPI, File, UploadFile
 from PIL import Image
 
+from app.grpc_service import create_grpc_server
 from app.model import WasteModel
 
-app = FastAPI(title="Waste ML Worker", version="0.1.0")
 worker_id = os.getenv("WORKER_ID", "worker-local")
+grpc_port = int(os.getenv("GRPC_PORT", "50051"))
 model = WasteModel()
+grpc_server = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global grpc_server
+    grpc_server = create_grpc_server(model, worker_id, grpc_port)
+    grpc_server.start()
+    print(f"[{worker_id}] gRPC server running on port {grpc_port}")
+    try:
+        yield
+    finally:
+        if grpc_server:
+            grpc_server.stop(grace=1.0)
+            print(f"[{worker_id}] gRPC server stopped")
+
+
+app = FastAPI(title="Waste ML Worker", version="0.2.0", lifespan=lifespan)
 
 
 @app.get("/health")

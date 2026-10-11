@@ -4,3 +4,5 @@ python-multipart==0.0.17
 pillow>=11.0.0
 torch>=2.5.1
 torchvision>=0.20.1
+grpcio>=1.68.0
+grpcio-tools>=1.68.0

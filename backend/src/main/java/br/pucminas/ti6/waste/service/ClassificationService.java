@@ -1,9 +1,11 @@
 package br.pucminas.ti6.waste.service;
 
 import br.pucminas.ti6.waste.client.WorkerClient;
+import br.pucminas.ti6.waste.client.WorkerGrpcClient;
 import br.pucminas.ti6.waste.config.WorkerProperties;
 import br.pucminas.ti6.waste.dto.ClassificationResponse;
 import br.pucminas.ti6.waste.dto.ExperimentResponse;
+import br.pucminas.ti6.waste.dto.ProtocolComparisonResponse;
 import br.pucminas.ti6.waste.dto.WorkerBatchResponse;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
@@ -15,48 +17,106 @@ import java.util.concurrent.CompletableFuture;
 @Service
 public class ClassificationService {
     private final WorkerClient workerClient;
+    private final WorkerGrpcClient workerGrpcClient;
     private final WorkerProperties workerProperties;
 
-    public ClassificationService(WorkerClient workerClient, WorkerProperties workerProperties) {
+    public ClassificationService(
+            WorkerClient workerClient,
+            WorkerGrpcClient workerGrpcClient,
+            WorkerProperties workerProperties
+    ) {
         this.workerClient = workerClient;
+        this.workerGrpcClient = workerGrpcClient;
         this.workerProperties = workerProperties;
     }
 
     public ClassificationResponse singleWorker(List<MultipartFile> files) {
-        if (workerProperties.urls().isEmpty()) {
-            throw new IllegalStateException("Nenhum worker configurado");
-        }
+        return singleWorker(files, "rest");
+    }
+
+    public ClassificationResponse singleWorker(List<MultipartFile> files, String protocol) {
         long start = System.nanoTime();
-        WorkerBatchResponse result = workerClient.classify(workerProperties.urls().get(0), files);
-        return buildResponse("single-worker", files.size(), List.of(result), start);
+        WorkerBatchResponse result;
+
+        if ("grpc".equalsIgnoreCase(protocol)) {
+            if (workerProperties.grpcUrls().isEmpty()) {
+                throw new IllegalStateException("Nenhum worker gRPC configurado");
+            }
+            result = workerGrpcClient.classify(workerProperties.grpcUrls().get(0), files);
+            return buildResponse("single-worker-grpc", files.size(), List.of(result), start);
+        } else {
+            if (workerProperties.urls().isEmpty()) {
+                throw new IllegalStateException("Nenhum worker REST configurado");
+            }
+            result = workerClient.classify(workerProperties.urls().get(0), files);
+            return buildResponse("single-worker-rest", files.size(), List.of(result), start);
+        }
     }
 
     public ClassificationResponse distributed(List<MultipartFile> files) {
-        if (workerProperties.urls().isEmpty()) {
-            throw new IllegalStateException("Nenhum worker configurado");
-        }
+        return distributed(files, "rest");
+    }
+
+    public ClassificationResponse distributed(List<MultipartFile> files, String protocol) {
         long start = System.nanoTime();
-        List<List<MultipartFile>> partitions = partition(files, workerProperties.urls().size());
-        List<CompletableFuture<WorkerBatchResponse>> futures = new ArrayList<>();
 
-        for (int i = 0; i < partitions.size(); i++) {
-            if (partitions.get(i).isEmpty()) {
-                continue;
+        if ("grpc".equalsIgnoreCase(protocol)) {
+            if (workerProperties.grpcUrls().isEmpty()) {
+                throw new IllegalStateException("Nenhum worker gRPC configurado");
             }
-            String workerUrl = workerProperties.urls().get(i);
-            List<MultipartFile> batch = partitions.get(i);
-            futures.add(CompletableFuture.supplyAsync(() -> workerClient.classify(workerUrl, batch)));
-        }
+            List<String> endpoints = workerProperties.grpcUrls();
+            List<List<MultipartFile>> partitions = partition(files, endpoints.size());
+            List<CompletableFuture<WorkerBatchResponse>> futures = new ArrayList<>();
 
-        List<WorkerBatchResponse> results = futures.stream().map(CompletableFuture::join).toList();
-        return buildResponse("distributed", files.size(), results, start);
+            for (int i = 0; i < partitions.size(); i++) {
+                if (partitions.get(i).isEmpty()) {
+                    continue;
+                }
+                String target = endpoints.get(i);
+                List<MultipartFile> batch = partitions.get(i);
+                futures.add(CompletableFuture.supplyAsync(() -> workerGrpcClient.classify(target, batch)));
+            }
+
+            List<WorkerBatchResponse> results = futures.stream().map(CompletableFuture::join).toList();
+            return buildResponse("distributed-grpc", files.size(), results, start);
+        } else {
+            if (workerProperties.urls().isEmpty()) {
+                throw new IllegalStateException("Nenhum worker REST configurado");
+            }
+            List<String> endpoints = workerProperties.urls();
+            List<List<MultipartFile>> partitions = partition(files, endpoints.size());
+            List<CompletableFuture<WorkerBatchResponse>> futures = new ArrayList<>();
+
+            for (int i = 0; i < partitions.size(); i++) {
+                if (partitions.get(i).isEmpty()) {
+                    continue;
+                }
+                String workerUrl = endpoints.get(i);
+                List<MultipartFile> batch = partitions.get(i);
+                futures.add(CompletableFuture.supplyAsync(() -> workerClient.classify(workerUrl, batch)));
+            }
+
+            List<WorkerBatchResponse> results = futures.stream().map(CompletableFuture::join).toList();
+            return buildResponse("distributed-rest", files.size(), results, start);
+        }
     }
 
     public ExperimentResponse compare(List<MultipartFile> files) {
-        ClassificationResponse baseline = singleWorker(files);
-        ClassificationResponse distributed = distributed(files);
+        return compare(files, "rest");
+    }
+
+    public ExperimentResponse compare(List<MultipartFile> files, String protocol) {
+        ClassificationResponse baseline = singleWorker(files, protocol);
+        ClassificationResponse distributed = distributed(files, protocol);
         double speedup = distributed.elapsedMs() == 0 ? 0 : baseline.elapsedMs() / distributed.elapsedMs();
         return new ExperimentResponse(baseline, distributed, speedup);
+    }
+
+    public ProtocolComparisonResponse compareProtocols(List<MultipartFile> files) {
+        ClassificationResponse restResult = distributed(files, "rest");
+        ClassificationResponse grpcResult = distributed(files, "grpc");
+        double speedup = grpcResult.elapsedMs() == 0 ? 0 : restResult.elapsedMs() / grpcResult.elapsedMs();
+        return new ProtocolComparisonResponse(restResult, grpcResult, speedup);
     }
 
     private ClassificationResponse buildResponse(

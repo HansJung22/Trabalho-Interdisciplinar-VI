@@ -2,7 +2,7 @@ package br.pucminas.ti6.waste.client;
 
 import br.pucminas.ti6.waste.dto.WorkerBatchResponse;
 import org.springframework.core.io.ByteArrayResource;
-import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -14,13 +14,23 @@ import java.util.List;
 
 @Component
 public class WorkerClient {
-    private final RestClient restClient = RestClient.create();
+    private final RestClient restClient;
+
+    public WorkerClient() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(5000);
+        factory.setReadTimeout(60000);
+        this.restClient = RestClient.builder()
+                .requestFactory(factory)
+                .build();
+    }
 
     public WorkerBatchResponse classify(String workerUrl, List<MultipartFile> files) {
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
         for (MultipartFile file : files) {
             try {
-                body.add("files", new NamedByteArrayResource(file.getBytes(), file.getOriginalFilename()));
+                String filename = file.getOriginalFilename() == null ? "image.jpg" : file.getOriginalFilename();
+                body.add("files", new NamedByteArrayResource(file.getBytes(), filename));
             } catch (IOException e) {
                 throw new IllegalArgumentException("Não foi possível ler o arquivo " + file.getOriginalFilename(), e);
             }
@@ -28,7 +38,6 @@ public class WorkerClient {
 
         return restClient.post()
                 .uri(workerUrl + "/predict/batch")
-                .contentType(MediaType.MULTIPART_FORM_DATA)
                 .body(body)
                 .retrieve()
                 .body(WorkerBatchResponse.class);

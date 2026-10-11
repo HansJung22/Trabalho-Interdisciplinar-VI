@@ -4,6 +4,7 @@ services:
       context: ./backend
     environment:
       WORKER_URLS: http://worker-1:8000,http://worker-2:8000
+      WORKER_GRPC_URLS: worker-1:50051,worker-2:50051
     ports:
       - "8080:8080"
     depends_on:
@@ -17,11 +18,13 @@ services:
       context: ./ml-worker
     environment:
       WORKER_ID: worker-1
+      GRPC_PORT: 50051
       MODEL_PATH: /app/models/waste_mobilenet.pt
     volumes:
       - ./ml-worker/models:/app/models:ro
     ports:
       - "8001:8000"
+      - "50051:50051"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -33,11 +36,13 @@ services:
       context: ./ml-worker
     environment:
       WORKER_ID: worker-2
+      GRPC_PORT: 50051
       MODEL_PATH: /app/models/waste_mobilenet.pt
     volumes:
       - ./ml-worker/models:/app/models:ro
     ports:
       - "8002:8000"
+      - "50052:50051"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s

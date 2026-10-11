@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package waste;
+
+option java_package = "br.pucminas.ti6.waste.grpc";
+option java_multiple_files = true;
+
+service WasteInferenceService {
+  // Batch inference RPC
+  rpc PredictBatch (BatchInferenceRequest) returns (BatchInferenceResponse);
+
+  // Health and status RPC
+  rpc CheckHealth (HealthRequest) returns (HealthResponse);
+}
+
+message ImagePayload {
+  string filename = 1;
+  bytes image_data = 2;
+}
+
+message BatchInferenceRequest {
+  repeated ImagePayload images = 1;
+}
+
+message PredictionItem {
+  string filename = 1;
+  string status = 2;       // "OK", "MODEL_NOT_LOADED", "INVALID_IMAGE"
+  string label = 3;        // "battery", "glass", "metal", "organic", "paper", "plastic"
+  float confidence = 4;
+}
+
+message BatchInferenceResponse {
+  string worker_id = 1;
+  bool model_loaded = 2;
+  double elapsed_ms = 3;
+  repeated PredictionItem predictions = 4;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;       // "UP"
+  string worker_id = 2;
+  bool model_loaded = 3;
+  string device = 4;       // "cpu" or "cuda"
+}
+
