@@ -4,7 +4,7 @@ import os
 import torch
 from PIL import Image
 from torchvision import transforms
-from torchvision.models import mobilenet_v3_small
+from torchvision.models import efficientnet_v2_s, mobilenet_v3_small
 
 
 class WasteModel:
@@ -14,7 +14,7 @@ class WasteModel:
         self.model = None
         self.class_names = []
         self.transform = transforms.Compose([
-            transforms.Resize((224, 224)),
+            transforms.Resize((384, 384)), # Use the same size configured in train.py
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ])
@@ -29,8 +29,15 @@ class WasteModel:
             return
         checkpoint = torch.load(self.path, map_location=self.device, weights_only=False)
         self.class_names = checkpoint["class_names"]
-        model = mobilenet_v3_small(weights=None)
-        model.classifier[3] = torch.nn.Linear(model.classifier[3].in_features, len(self.class_names))
+        arch = checkpoint.get("architecture", "efficientnet_v2_s")
+
+        if arch == "efficientnet_v2_s":
+            model = efficientnet_v2_s(weights=None)
+            model.classifier[1] = torch.nn.Linear(model.classifier[1].in_features, len(self.class_names))
+        else:
+            model = mobilenet_v3_small(weights=None)
+            model.classifier[3] = torch.nn.Linear(model.classifier[3].in_features, len(self.class_names))
+
         model.load_state_dict(checkpoint["state_dict"])
         model.to(self.device)
         model.eval()
