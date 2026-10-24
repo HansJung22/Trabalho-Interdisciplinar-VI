@@ -4,24 +4,27 @@
 ![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.5-brightgreen)
 ![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.14-yellow)
 ![gRPC](https://img.shields.io/badge/gRPC-HTTP%2F2%20Protobuf-red)
+![PyTorch](https://img.shields.io/badge/PyTorch-CUDA%20%2B%20Tensor%20Cores-ee4c2c)
 ![Docker](https://img.shields.io/badge/Docker-Compose-blue)
 ![Status](https://img.shields.io/badge/status-em%20desenvolvimento-orange)
 
 Projeto desenvolvido para o **Trabalho Interdisciplinar VI do curso de Ciência da Computação da PUC Minas**.
 
-O objetivo principal do projeto é classificar imagens de resíduos sólidos e, simultaneamente, estudar empiricamente o comportamento computacional do processamento em execuções **sequenciais, paralelas e distribuídas**, bem como o impacto do protocolo de transporte (**REST vs. gRPC**).
+O objetivo principal do projeto é classificar imagens de resíduos sólidos e, simultaneamente, estudar empiricamente o comportamento computacional do processamento em execuções **sequenciais, paralelas e distribuídas**, bem como o impacto do protocolo de transporte (**REST vs. gRPC**) e de aceleração por hardware em GPUs NVIDIA (**CUDA e Tensor Cores**).
 
 ---
 
 ## O que queremos investigar
 
-A pergunta central da pesquisa é: **quanto conseguimos acelerar a classificação de um grande conjunto de imagens sem perder a acurácia das previsões?**
+A pergunta central da pesquisa é: **quanto conseguimos acelerar a classificação e o treinamento de um grande conjunto de imagens sem perder a acurácia das previsões?**
 
 O trabalho integra as três áreas fundamentais do semestre:
 
 - **Processamento e Análise de Imagens:** preparação das imagens, data augmentation e classificação com CNN (MobileNetV3 / EfficientNetV2);
-- **Computação Paralela:** processamento em lotes (*batches*), uso intensivo de múltiplos núcleos de CPU e GPU/CUDA;
-- **Computação Distribuída:** particionamento de carga entre nós de processamento (*workers*) independentes, agregação de resultados e análise do overhead de comunicação em rede (REST sobre HTTP/1.1 vs. gRPC sobre HTTP/2).
+- **Computação Paralela:**
+  - *No Treinamento:* paralelismo SIMT em GPU (NVIDIA CUDA), aceleração por matriz mista em **Tensor Cores (AMP / FP16)**, DMA assíncrono via memória pinada (*pinned memory*) e multiprocessamento no pré-processamento de CPU (*multiprocessing DataLoader*);
+  - *Na Inferência:* execução simultânea em múltiplos núcleos de CPU e escalonamento balanceado de lotes;
+- **Computação Distribuída:** particionamento de carga entre nós de processamento (*workers*) independentes, agregação de resultados e análise do overhead de comunicação em rede (REST sobre HTTP/1.1 vs. gRPC sobre HTTP/2 com Protocol Buffers).
 
 As seis categorias de resíduos suportadas são:
 
@@ -76,6 +79,7 @@ Para rodar a aplicação completa, você pode optar pela execução via **Docker
 | **Python** | 3.11 ou superior | Treinamento do modelo e execução local dos workers |
 | **Java (JDK)** | 17 ou superior | Execução local do backend Java |
 | **Maven** | 3.9 ou superior | Compilação local do backend Java (se executado sem Docker) |
+| **GPU NVIDIA + Driver CUDA** *(Opcional)* | Driver 535+ / CUDA 12.x | Treinamento acelerado por hardware com Tensor Cores e CUDA |
 
 ---
 
@@ -90,7 +94,7 @@ cd Trabalho-Interdisciplinar-VI
 
 ---
 
-### Passo 2: Treinamento do Modelo (Opcional, mas Recomendado)
+### Passo 2: Treinamento do Modelo com Paralelismo em GPU
 
 > [!NOTE]
 > Os pesos treinados do modelo (`.pt`) **não são versionados no Git** devido ao tamanho. Se você iniciar o sistema sem treinar o modelo, todos os endpoints funcionarão normalmente, mas retornarão o status `MODEL_NOT_LOADED`.
@@ -121,7 +125,7 @@ cd Trabalho-Interdisciplinar-VI
      pip install -r requirements.txt
      ```
 
-3. **Gere os stubs do Protobuf/gRPC para o Python**:
+3. **Compile os stubs do Protobuf/gRPC para o Python**:
    * No **Windows (PowerShell)**:
      ```powershell
      .\.venv\Scripts\python.exe -m grpc_tools.protoc -I../proto --python_out=app/proto --grpc_python_out=app/proto ../proto/waste_inference.proto
@@ -131,19 +135,39 @@ cd Trabalho-Interdisciplinar-VI
      python3 -m grpc_tools.protoc -I../proto --python_out=app/proto --grpc_python_out=app/proto ../proto/waste_inference.proto
      ```
 
-4. **Execute o script de treinamento**:
+4. **Verifique o suporte à GPU NVIDIA (CUDA)**:
+   ```powershell
+   .\.venv\Scripts\python.exe -c "import torch; print('CUDA disponível:', torch.cuda.is_available()); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'Nenhuma')"
+   ```
+
+5. **Execute o treinamento acelerado**:
    * No **Windows (PowerShell)**:
      ```powershell
-     .\.venv\Scripts\python.exe training/train.py --data "..\dataset\Train_base" --epochs 10 --output "models/waste_mobilenet.pt"
+     .\.venv\Scripts\python.exe training/train.py --data "..\dataset\Train_base" --epochs 10 --batch-size 32 --workers 4 --output "models/waste_mobilenet.pt"
      ```
    * No **Linux/macOS**:
      ```bash
-     python3 training/train.py --data "../dataset/Train_base" --epochs 10 --output "models/waste_mobilenet.pt"
+     python3 training/train.py --data "../dataset/Train_base" --epochs 10 --batch-size 32 --workers 4 --output "models/waste_mobilenet.pt"
      ```
-   * Volte para a raiz do repositório:
-     ```bash
-     cd ..
-     ```
+
+#### Recursos de Computação Paralela Ativos no Treinamento
+
+| Otimização | Descrição |
+| :--- | :--- |
+| **Tensor Cores (AMP / FP16)** | Utiliza `torch.amp.autocast` e `GradScaler`, reduzindo o uso de VRAM em 50% e acelerando o cálculo de convoluções em até $2\times - 3\times$. |
+| **Pipeline Assíncrono Host-Device** | Habilita memória pinada (`pin_memory=True`) e transferências DMA assíncronas via barramento PCIe (`non_blocking=True`). |
+| **Autotuner cuDNN** | Ativa `cudnn.benchmark = True` para testar e selecionar o algoritmo paralelo de convolução mais eficiente para sua GPU. |
+| **Multiprocessamento de CPU** | Divide o carregamento e data augmentation em múltiplos processos independentes (`--workers 4`). |
+
+*Flags adicionais úteis:*
+* `--no-amp`: Desativa os Tensor Cores e força precisão $FP32$ pura (ideal para medir o speedup de **$FP32$ vs. $FP16$ Tensor Cores** no relatório).
+* `--batch-size 64`: Aumenta o tamanho do lote para aproveitar placas com maior VRAM (ex: 8GB+).
+* `--workers 8`: Aumenta o paralelismo de decodificação de imagens caso você possua uma CPU com mais núcleos.
+
+Ao final, volte para a raiz do repositório:
+```bash
+cd ..
+```
 
 ---
 
@@ -244,7 +268,7 @@ curl -X POST "http://localhost:8080/api/v1/classifications?strategy=distributed&
   -F "files=@dataset/Train_base/battery/battery10.jpg"
 ```
 
-*Exemplo de resposta:*
+*Exemplo de resposta estruturada:*
 ```json
 {
   "strategy": "distributed-grpc",
@@ -299,7 +323,7 @@ curl -X POST "http://localhost:8080/api/v1/experiments/compare?protocol=grpc" `
 ---
 
 ### 6. Comparação de Protocolos: REST vs. gRPC
-Mede o impacto da camada de transporte e serialização comparando as duas abordagens sob a mesma carga:
+Mede o impacto da camada de transporte e serialização comparando as duas abordagens sob a mesma carga de imagens:
 
 ```powershell
 curl -X POST "http://localhost:8080/api/v1/experiments/compare-protocols" `
@@ -307,7 +331,7 @@ curl -X POST "http://localhost:8080/api/v1/experiments/compare-protocols" `
   -F "files=@dataset/Train_base/battery/battery10.jpg"
 ```
 
-*Retorna o tempo de cada protocolo e o ganho percentual/speedup obtido com gRPC.*
+*Retorna o tempo de cada protocolo e a aceleração obtida com a serialização binária do Protobuf e multiplexação do HTTP/2.*
 
 ---
 
@@ -339,7 +363,7 @@ O script:
 ├── ml-worker/                # Nó de inferência e treinamento (Python, FastAPI, PyTorch, gRPC Servicer)
 │   ├── app/                  # Servidor de inferência (REST na porta 8000 e gRPC na 50051)
 │   ├── models/               # Armazena os pesos do modelo (waste_mobilenet.pt)
-│   ├── training/             # Scripts de treinamento com PyTorch
+│   ├── training/             # Script de treino otimizado com CUDA, Tensor Cores e AMP
 │   └── requirements.txt      # Dependências Python (Torch, Torchvision, FastAPI, gRPC)
 ├── proto/                    # Contrato canônico gRPC (waste_inference.proto)
 ├── dataset/                  # Instruções de organização do conjunto de dados
